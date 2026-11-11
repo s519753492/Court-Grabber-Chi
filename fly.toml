@@ -1,0 +1,22 @@
+# Fly.io config. The app name must be unique on Fly.
+app = "court-grabber-chi"
+primary_region = "ord"          # Chicago
+
+[env]
+  DATA_DIR = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"    # must stay awake to book at 7:00 AM
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[mounts]]
+  source = "courtdata"
+  destination = "/data"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Court Grabber</title>
+  <meta name="theme-color" content="#14532d">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Courts">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><img src="/icon.svg" alt="" width="28" height="28"> Court Grabber</div>
+    <div class="sub">McFetridge indoor tennis</div>
+  </header>
+
+  <!-- signed out -->
+  <main id="auth" class="view" hidden>
+    <section class="card">
+      <h1 id="authTitle">Sign in</h1>
+      <form id="authForm" autocomplete="on">
+        <label class="reg">Your name <input name="name" autocomplete="name"></label>
+        <label>Email <input name="email" type="email" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" minlength="8" autocomplete="current-password" required></label>
+        <label class="reg">Invite code <input name="invite" autocomplete="off"></label>
+        <p class="hint reg">This password is just for this app, not your Park District one.</p>
+        <button class="btn primary" type="submit" id="authBtn">Sign in</button>
+        <p class="err" id="authErr"></p>
+      </form>
+      <button class="link" id="authSwitch">New here? Create an account</button>
+    </section>
+  </main>
+
+  <!-- signed in -->
+  <main id="home" class="view" hidden>
+    <div id="setupNotice"></div>
+    <div id="payCards"></div>
+
+    <section class="section-head">
+      <h2>My court requests</h2>
+      <button class="btn primary small" id="addBtn">+ Add</button>
+    </section>
+    <ul id="list" class="list"></ul>
+    <p class="empty" id="empty" hidden>No requests yet. Tap <b>+ Add</b> and pick the day you want to play. The app grabs a court at 7:00 AM, six days before.</p>
+  </main>
+
+  <main id="settings" class="view" hidden>
+    <section class="card">
+      <h2>Park District login</h2>
+      <p class="hint">Used only to book for you. It's stored encrypted on the server.</p>
+      <form id="parkForm">
+        <label>Park District email <input name="cpd_email" type="email" autocomplete="off" required></label>
+        <label>Park District password <input name="cpd_password" type="password" autocomplete="new-password" placeholder="Enter to change" required></label>
+        <button class="btn primary" type="submit">Save</button>
+      </form>
+      <button class="btn" id="testLogin">Test sign-in</button>
+      <p class="msg" id="parkMsg"></p>
+      <p class="hint">Make sure a credit card is saved on your Park District account. The app pays with that card; you only type its 3–4 digit security code when a court is held.</p>
+    </section>
+
+    <section class="card">
+      <h2>Notifications</h2>
+      <p class="hint" id="pushHint">Get an alert the moment a court is held, so you can pay within 9 minutes.</p>
+      <button class="btn primary" id="pushBtn">Turn on notifications</button>
+      <button class="btn" id="pushTest">Send a test alert</button>
+      <p class="msg" id="pushMsg"></p>
+    </section>
+
+    <section class="card">
+      <h2>Try it safely</h2>
+      <p class="hint">Runs a real booking for a date that's already open, stops at checkout without paying, then releases the court.</p>
+      <form id="testForm" class="row">
+        <input name="play_date" type="date" required>
+        <select name="start" id="testStart"></select>
+        <button class="btn" type="submit">Run test</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Account</h2>
+      <p class="hint" id="whoami"></p>
+      <button class="btn" id="logout">Sign out</button>
+      <button class="btn danger" id="deleteAcct">Delete my account</button>
+    </section>
+  </main>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-view="home" class="active">Courts</button>
+    <button data-view="settings">Settings</button>
+  </nav>
+
+  <!-- add sheet -->
+  <dialog id="sheet">
+    <form id="addForm" method="dialog">
+      <h2>When do you want to play?</h2>
+      <label>Date <input name="play_date" type="date" required></label>
+      <p class="hint" id="opensHint"></p>
+      <label>Start time <select name="start" id="startSel"></select></label>
+      <fieldset>
+        <legend>If that's taken, also try</legend>
+        <div class="chips" id="fallbackChips"></div>
+      </fieldset>
+      <label>How long
+        <select name="hours">
+          <option value="1">1 hour</option><option value="2">2 hours</option>
+          <option value="3">3 hours</option><option value="4">4 hours</option>
+        </select>
+      </label>
+      <fieldset>
+        <legend>Favorite courts (tried first)</legend>
+        <div class="chips" id="courtChips"></div>
+        <label class="check"><input type="checkbox" name="any_court" checked> Otherwise any free court</label>
+      </fieldset>
+      <label>Name on the reservation <input name="event_name" value="Tennis" maxlength="40"></label>
+      <p class="err" id="addErr"></p>
+      <div class="row end">
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" id="addSave" value="save">Save request</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
