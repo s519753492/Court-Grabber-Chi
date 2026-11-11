@@ -120,24 +120,35 @@ async def select_date(page: Page, d: dt.date) -> None:
     if (await box.input_value()).strip() == _date_text(d) and await page.locator(GRID_CELL).count():
         return      # already showing that day; clicking it again would load nothing
     await box.click()
+    # Wait for the calendar pop-up before deciding whether to change month;
+    # checking too early made the bot skip ahead to the next month.
+    await page.locator(".an-calendar-day").first.wait_for(state="visible", timeout=15_000)
     mid_month = page.locator(f'.an-calendar-day[aria-label="{d:%b} 15, {d.year}"]')
     for _ in range(3):
         if await mid_month.count():
             break
         await page.locator('[aria-label="Switch calendar to next month right arrow"]').click()
+        await page.wait_for_timeout(300)
     day = page.locator(f'.an-calendar-day[aria-label="{d:%b} {d.day}, {d.year}"]').first
+    if not await day.count():
+        await shot(page, "no-day")
+        raise BotError(f"Couldn't find {d:%a %b} {d.day} in the Park District date picker.")
     try:
         async with page.expect_response(lambda r: "quickreservation/availability" in r.url,
                                         timeout=20_000):
             await day.click()
     except PWTimeout:
-        pass        # e.g. the day was already selected; check the grid below instead
+        pass        # checked below
+    # Never read a grid unless it is for the date we asked for.
     try:
+        await page.wait_for_function(
+            "([sel, want]) => { const e = document.querySelector(sel); return e && e.value.trim() === want; }",
+            arg=[DATE_INPUT, _date_text(d)], timeout=10_000)
         await page.locator(GRID_CELL).first.wait_for(state="attached", timeout=20_000)
     except PWTimeout:
         await shot(page, "no-grid")
         raise BotError(f"The court grid for {d:%a %b} {d.day} didn't load on the Park District site.")
-    await page.wait_for_timeout(400)
+    await page.wait_for_timeout(600)
 
 
 async def refresh_grid(page: Page, d: dt.date) -> None:
@@ -153,6 +164,24 @@ async def available_cells(page: Page) -> set[str]:
         GRID_CELL, "els => els.map(e => e.getAttribute('aria-label'))")
     return {lab.rsplit(" ", 1)[0] for lab in labels
             if lab and lab.rsplit(" ", 1)[-1] == "Available"}
+
+
+async def shown_date(page: Page) -> str:
+    try:
+        return (await page.locator(DATE_INPUT).first.input_value()).strip() or "?"
+    except Exception:
+        return "?"
+
+
+def free_summary(starts: list[int], cells: set[str]) -> str:
+    """e.g. '6:00 AM free on courts 3, 4' - for explaining a 'no court' result."""
+    parts = []
+    for h in starts:
+        free = [c for c in TENNIS_COURTS if slot_prefix(c, h) in cells]
+        parts.append(f"{hour_label(h)} free on courts {', '.join(map(str, free))}" if free
+                     else f"{hour_label(h)} free on no courts")
+    tennis = sum(1 for c in cells if c.startswith("McFetridge Tennis"))
+    return "; ".join(parts) + f"; {tennis} free tennis slots that day"
 
 
 def candidates(starts: list[int], hours: int, courts: list[int], cells: set[str]):

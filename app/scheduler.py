@@ -178,7 +178,12 @@ class Runner:
                     continue
                 options = [o for o in bot.candidates(starts, hours, courts, cells) if o not in tried]
                 if not options:
-                    status("no_court", "None of your preferred courts and times were free.")
+                    await bot.shot(page, f"error-{bid}")
+                    shown = await bot.shown_date(page)
+                    seen = bot.free_summary(starts, cells)
+                    log.info("booking %s no court; grid date %s; %s", bid, shown, seen)
+                    status("no_court", "None of your preferred courts and times were free. "
+                                       f"(Checked the grid for {shown}: {seen}.)")
                     await push.notify(uid, "No court this time",
                                       f"{label}: none of your preferred courts/times were free.")
                     return
