@@ -1,0 +1,110 @@
+# Builds the server, checks that it starts, then deploys it to Fly.io.
+# Runs on every change to main, or by hand from the Actions tab ("Run workflow").
+# Needs one repository secret: FLY_API_TOKEN (a token from fly.io/dashboard -> Tokens).
+name: Deploy to Fly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  REGION: ord
+  # Friends need this code to create an account. Override it with a repository
+  # secret named INVITE_CODE if you'd rather not keep it in the repo.
+  INVITE_CODE: ${{ secrets.INVITE_CODE || 'TENNISPRACTICE' }}
+  VAPID_CONTACT: mailto:courtapp@example.invalid
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the Fly token is set
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::Add a repository secret named FLY_API_TOKEN (Settings -> Secrets and variables -> Actions), then re-run this workflow."
+            exit 1
+          fi
+
+      - name: Build the server image
+        run: docker build -t courtapp:ci .
+
+      - name: Smoke test (start the server and call it)
+        run: |
+          docker run -d --name ci -p 8080:8080 \
+            -e ENCRYPTION_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
+            -e INVITE_CODE=ci-test -e DATA_DIR=/tmp/data courtapp:ci
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:8080/ && break
+            sleep 2
+          done
+          set -x
+          curl -fsS -o /dev/null http://localhost:8080/
+          curl -fsS -o /dev/null http://localhost:8080/manifest.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+            -d '{"invite":"wrong","name":"CI","email":"ci@example.invalid","password":"ci-password-1"}' \
+            http://localhost:8080/api/register)" = 403
+          curl -fsS -c jar -H 'content-type: application/json' \
+            -d '{"invite":"ci-test","name":"CI","email":"ci@example.invalid","password":"ci-password-1"}' \
+            http://localhost:8080/api/register
+          curl -fsS -b jar http://localhost:8080/api/bookings
+          curl -fsS -b jar -X PUT -H 'content-type: application/json' \
+            -d '{"cpd_email":"ci@example.invalid","cpd_password":"x"}' http://localhost:8080/api/me/park-login
+          # Chromium must launch inside the image (no traffic to the Park District site).
+          docker exec ci python -c "import asyncio; from playwright.async_api import async_playwright
+          async def m():
+              async with async_playwright() as p:
+                  b = await p.chromium.launch(headless=True); pg = await b.new_page()
+                  await pg.set_content('<p>ok</p>'); print('chromium:', await pg.inner_text('p')); await b.close()
+          asyncio.run(m())"
+
+      - name: Server log (smoke test)
+        if: always()
+        run: docker logs ci || true
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create the Fly app, disk and secrets (first run only)
+        run: |
+          APP=$(sed -n 's/^app *= *"\(.*\)"/\1/p' fly.toml)
+          echo "App: $APP"
+          if ! flyctl status --app "$APP" >/dev/null 2>&1; then
+            if ! flyctl apps create "$APP" --org personal; then
+              echo "::error::Couldn't create app '$APP'. The name may be taken: change 'app' in fly.toml to another name (e.g. $APP-$RANDOM) and commit."
+              exit 1
+            fi
+          fi
+          if [ "$(flyctl volumes list --app "$APP" --json | jq 'length')" = 0 ]; then
+            flyctl volumes create courtdata --app "$APP" --region "$REGION" --size 1 --yes
+          fi
+          if ! flyctl secrets list --app "$APP" --json | jq -e '.[] | select(.Name == "ENCRYPTION_KEY" or .name == "ENCRYPTION_KEY")' >/dev/null; then
+            KEY=$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')
+            echo "::add-mask::$KEY"
+            flyctl secrets set --app "$APP" --stage ENCRYPTION_KEY="$KEY"
+            echo "Created a new ENCRYPTION_KEY (stored only in Fly)."
+          fi
+          flyctl secrets set --app "$APP" --stage INVITE_CODE="$INVITE_CODE" VAPID_CONTACT="$VAPID_CONTACT"
+
+      - name: Deploy
+        run: flyctl deploy --local-only --ha=false --wait-timeout 600
+
+      - name: Check the live site
+        run: |
+          APP=$(sed -n 's/^app *= *"\(.*\)"/\1/p' fly.toml)
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/api/me")
+            [ "$code" = 401 ] && echo "Live at https://$APP.fly.dev" && exit 0
+            sleep 5
+          done
+          flyctl logs --app "$APP" --no-tail | tail -n 80
+          exit 1
