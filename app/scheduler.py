@@ -164,6 +164,7 @@ class Runner:
             status("running", "Looking for a free court...")
             give_up = time.monotonic() + OPEN_POLL_SECONDS
             tried: set[tuple[int, int]] = set()
+            failures: list[str] = []
             # The grid loaded above is current unless we waited for 7:00 AM since then.
             first_look = not waited
             while True:
@@ -177,6 +178,10 @@ class Runner:
                     await asyncio.sleep(0.7)        # not open yet
                     continue
                 options = [o for o in bot.candidates(starts, hours, courts, cells) if o not in tried]
+                if not options and failures:
+                    # Courts were free but reserving them failed: that's a problem, not "no court".
+                    log.warning("booking %s reserve failed: %s", bid, failures)
+                    raise bot.BotError("A court was free but reserving it failed. " + " | ".join(failures))
                 if not options:
                     await bot.shot(page, f"error-{bid}")
                     shown = await bot.shown_date(page)
@@ -190,8 +195,11 @@ class Runner:
                 start, court = options[0]
                 tried.add((start, court))
                 stage = f"reserving Court {court} at {bot.hour_label(start)}"
-                if await bot.try_reserve(page, b["event_name"], start, hours, court):
+                ok, why = await bot.try_reserve(page, b["event_name"], start, hours, court,
+                                                shot_tag=f"error-{bid}")
+                if ok:
                     break
+                failures.append(f"Court {court} {bot.hour_label(start)}: {why}")
                 stage = "reopening the court page"
                 await bot.open_quick(page)
                 await bot.select_date(page, play_date)
@@ -247,7 +255,7 @@ class Runner:
         except asyncio.CancelledError:
             raise
         except bot.BotError as e:
-            if page:
+            if page and not bot.latest_shot(bid):   # keep the screenshot from the failing step
                 await bot.shot(page, f"error-{bid}")
             status("failed", str(e))
             await push.notify(uid, "Booking problem", f"{label}: {e}")

@@ -204,41 +204,59 @@ async def clear_selection(page: Page) -> None:
         pass
 
 
-async def try_reserve(page: Page, event_name: str, start: int, hours: int, court: int) -> bool:
-    """Select the slot(s) and go to checkout. True when the court is in the cart."""
+async def try_reserve(page: Page, event_name: str, start: int, hours: int, court: int,
+                      shot_tag: str = "") -> tuple[bool, str]:
+    """Select the slot(s) and go to checkout.
+
+    Returns (True, "") when the court is in the cart, else (False, why) where
+    `why` names the step that failed and any message the site showed.
+    """
+    async def fail(step: str) -> tuple[bool, str]:
+        err = await visible_error(page)
+        await shot(page, shot_tag or f"reserve-ct{court}")
+        await clear_selection(page)
+        return False, step + (f' The site said: "{err}"' if err else "")
+
     await page.get_by_role("textbox", name="Event name").fill(event_name)
     for i in range(hours):
         await page.locator(
             f'[role="gridcell"][aria-label^="{slot_prefix(court, start + i)} "]').first.click()
     # Accessible name is e.g. "1 Resource(s), 1 Booking(s) selected Confirm bookings"
-    await page.get_by_role("button", name="Confirm bookings").click()
+    confirm = page.get_by_role("button", name=re.compile(r"Confirm bookings\s*$"))
+    try:
+        await confirm.first.wait_for(state="visible", timeout=10_000)
+    except PWTimeout:
+        return await fail("After picking the court, the 'Confirm bookings' button didn't appear.")
+    await confirm.first.click()
 
-    agree = page.get_by_role("checkbox", name="I have read and agree", exact=False)
+    agree = page.get_by_role("checkbox", name=re.compile(r"I have read and agree", re.I))
     # Accessible name is e.g. "Total $30.00 Reserve"
     reserve = page.get_by_role("button", name=re.compile(r"Reserve\s*$"))
-    deadline = time.monotonic() + 15
+    saved = False
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if await agree.count() and await agree.first.is_visible():
+        if await reserve.count() and await reserve.first.is_visible() and await reserve.first.is_enabled():
+            break
+        if not saved and await agree.count() and await agree.first.is_visible():
             if not await agree.first.is_checked():
                 await agree.first.check()
-            await page.get_by_role("button", name="Save", exact=True).click()
+            save = page.get_by_role("button", name=re.compile(r"^\s*Save\s*$"))
+            if await save.count() and await save.first.is_visible():
+                await save.first.click()
+                saved = True
             await page.wait_for_timeout(500)
-        if await reserve.count() and await reserve.first.is_visible():
-            break
-        await page.wait_for_timeout(200)
+            continue
+        await page.wait_for_timeout(300)
     else:
-        await shot(page, f"no-reserve-ct{court}")
-        await clear_selection(page)
-        return False
+        return await fail("After 'Confirm bookings', the 'Reserve' button never became available"
+                          + (" (the rules box was accepted)." if saved else "."))
 
     await reserve.first.click()
     try:
         await page.wait_for_url("**/checkout**", timeout=30_000)
     except PWTimeout:
-        await shot(page, f"no-checkout-ct{court}")
-        await clear_selection(page)
-        return False
-    return True
+        return await fail("After pressing 'Reserve', the site didn't go to checkout.")
+    return True, ""
 
 
 async def checkout_total(page: Page) -> str:
