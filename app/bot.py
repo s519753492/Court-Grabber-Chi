@@ -48,6 +48,12 @@ def slot_prefix(court: int, hour: int) -> str:
     return f"McFetridge Tennis Ct{court:02d} {hour_label(hour)} - {hour_label(hour + 1)}"
 
 
+def latest_shot(booking_id: int):
+    """Newest failure screenshot saved for a booking, or None."""
+    files = sorted(SHOT_DIR.glob(f"*-error-{booking_id}.png")) if SHOT_DIR.exists() else []
+    return files[-1] if files else None
+
+
 async def shot(page: Page, tag: str) -> None:
     try:
         SHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -95,17 +101,42 @@ async def sign_in(page: Page, email: str, password: str) -> None:
 
 # ------------------------------------------------------------------ court grid
 
+DATE_INPUT = 'input[role="combobox"][aria-label^="Date picker"]'
+GRID_CELL = '[role="gridcell"][aria-label]'
+
+
+async def open_quick(page: Page) -> None:
+    """Open the quick-reservation page and wait until its date picker is usable."""
+    await page.goto(QUICK_URL, wait_until="domcontentloaded", timeout=45_000)
+    await page.locator(DATE_INPUT).first.wait_for(state="visible", timeout=45_000)
+
+
+def _date_text(d: dt.date) -> str:
+    return f"{d:%a, %b} {d.day}, {d.year}"      # how the input shows it: "Tue, Nov 10, 2026"
+
+
 async def select_date(page: Page, d: dt.date) -> None:
-    await page.locator('input[role="combobox"][aria-label^="Date picker"]').first.click()
+    box = page.locator(DATE_INPUT).first
+    if (await box.input_value()).strip() == _date_text(d) and await page.locator(GRID_CELL).count():
+        return      # already showing that day; clicking it again would load nothing
+    await box.click()
     mid_month = page.locator(f'.an-calendar-day[aria-label="{d:%b} 15, {d.year}"]')
     for _ in range(3):
         if await mid_month.count():
             break
         await page.locator('[aria-label="Switch calendar to next month right arrow"]').click()
     day = page.locator(f'.an-calendar-day[aria-label="{d:%b} {d.day}, {d.year}"]').first
-    async with page.expect_response(lambda r: "quickreservation/availability" in r.url,
-                                    timeout=20_000):
-        await day.click()
+    try:
+        async with page.expect_response(lambda r: "quickreservation/availability" in r.url,
+                                        timeout=20_000):
+            await day.click()
+    except PWTimeout:
+        pass        # e.g. the day was already selected; check the grid below instead
+    try:
+        await page.locator(GRID_CELL).first.wait_for(state="attached", timeout=20_000)
+    except PWTimeout:
+        await shot(page, "no-grid")
+        raise BotError(f"The court grid for {d:%a %b} {d.day} didn't load on the Park District site.")
     await page.wait_for_timeout(400)
 
 
@@ -119,7 +150,7 @@ async def refresh_grid(page: Page, d: dt.date) -> None:
 
 async def available_cells(page: Page) -> set[str]:
     labels = await page.eval_on_selector_all(
-        '[role="gridcell"][aria-label]', "els => els.map(e => e.getAttribute('aria-label'))")
+        GRID_CELL, "els => els.map(e => e.getAttribute('aria-label'))")
     return {lab.rsplit(" ", 1)[0] for lab in labels
             if lab and lab.rsplit(" ", 1)[-1] == "Available"}
 
@@ -225,7 +256,8 @@ async def pay(page: Page, cvv: str) -> tuple[bool, str]:
 async def empty_cart(page: Page) -> None:
     """Remove everything this session put in the cart (frees the court right away)."""
     try:
-        await page.goto(CART_URL, wait_until="networkidle")
+        await page.goto(CART_URL, wait_until="domcontentloaded", timeout=45_000)
+        await page.wait_for_timeout(4000)
         for _ in range(5):
             trash = page.locator('a[aria-label^="delete transaction"]')
             if not await trash.count():

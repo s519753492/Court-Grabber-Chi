@@ -13,7 +13,7 @@ import json
 import logging
 import time
 
-from playwright.async_api import Browser, async_playwright
+from playwright.async_api import Browser, TimeoutError as PWTimeout, async_playwright
 
 from . import bot, db, push, security
 from .config import HOLD_MINUTES, SIGN_IN_LEAD_SECONDS
@@ -138,6 +138,7 @@ class Runner:
         starts, courts, hours = json.loads(b["starts"]), json.loads(b["courts"]), b["hours"]
         label = f"{play_date:%a %b} {play_date.day}"
         ctx = page = None
+        stage = "starting"
 
         def status(s: str, detail: str = "", **extra) -> None:
             db.set_booking(bid, status=s, detail=detail, **extra)
@@ -146,21 +147,30 @@ class Runner:
             if not user["cpd_email"] or not user["cpd_password_enc"]:
                 raise bot.BotError("Add your Park District login in Settings first.")
             status("running", "Signing in to the Park District site...")
+            stage = "signing in"
             ctx, page = await self.new_page()
             await bot.sign_in(page, user["cpd_email"], security.decrypt(user["cpd_password_enc"]))
 
-            await page.goto(bot.QUICK_URL, wait_until="networkidle")
+            stage = "opening the court page"
+            await bot.open_quick(page)
+            stage = "picking the date"
             await bot.select_date(page, play_date)
             open_time = bot.opens_at(play_date)
-            if bot.now() < open_time:
+            waited = bot.now() < open_time
+            if waited:
                 status("running", f"Signed in. Waiting for courts to open at {open_time:%-I:%M} AM...")
                 await asyncio.sleep((open_time - bot.now()).total_seconds() + 0.2)
 
             status("running", "Looking for a free court...")
             give_up = time.monotonic() + OPEN_POLL_SECONDS
             tried: set[tuple[int, int]] = set()
+            # The grid loaded above is current unless we waited for 7:00 AM since then.
+            first_look = not waited
             while True:
-                await bot.refresh_grid(page, play_date)
+                stage = "reading the court grid"
+                if not first_look:
+                    await bot.refresh_grid(page, play_date)
+                first_look = False
                 cells = await bot.available_cells(page)
                 if not any(c.startswith("McFetridge Tennis") for c in cells) \
                         and time.monotonic() < give_up:
@@ -174,12 +184,16 @@ class Runner:
                     return
                 start, court = options[0]
                 tried.add((start, court))
+                stage = f"reserving Court {court} at {bot.hour_label(start)}"
                 if await bot.try_reserve(page, b["event_name"], start, hours, court):
                     break
-                await page.goto(bot.QUICK_URL, wait_until="networkidle")
+                stage = "reopening the court page"
+                await bot.open_quick(page)
                 await bot.select_date(page, play_date)
+                first_look = True
 
             what = f"{label}, Court {court}, {bot.hour_label(start)} for {hours}h"
+            stage = "reading the checkout page"
             total = await bot.checkout_total(page)
 
             if b["is_test"]:
@@ -228,13 +242,16 @@ class Runner:
         except asyncio.CancelledError:
             raise
         except bot.BotError as e:
+            if page:
+                await bot.shot(page, f"error-{bid}")
             status("failed", str(e))
             await push.notify(uid, "Booking problem", f"{label}: {e}")
         except Exception as e:
-            log.exception("booking %s failed", bid)
+            log.exception("booking %s failed while %s", bid, stage)
             if page:
                 await bot.shot(page, f"error-{bid}")
-            status("failed", f"Something went wrong on the Park District site ({e.__class__.__name__}).")
+            kind = "took too long" if isinstance(e, PWTimeout) else f"hit an error ({e.__class__.__name__})"
+            status("failed", f"The Park District site {kind} while {stage}.")
             await push.notify(uid, "Booking problem", f"{label}: something went wrong. Book by hand.")
         finally:
             self.jobs.pop(bid, None)

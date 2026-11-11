@@ -169,6 +169,7 @@ function render() {
           <span class="badge ${cls}">${esc(label)}</span></div>
         <div class="what">${esc(describe(b))}${b.total ? " · " + esc(b.total) : ""}</div>
         ${detail ? `<div class="detail">${esc(detail)}</div>` : ""}
+        ${b.has_shot ? `<a class="detail" href="/api/bookings/${b.id}/screenshot" target="_blank" rel="noopener">See what the bot saw</a>` : ""}
       </div>
       ${["running", "paying", "awaiting_payment"].includes(b.status) ? "" :
         `<button class="x" data-del="${b.id}" aria-label="Remove">×</button>`}

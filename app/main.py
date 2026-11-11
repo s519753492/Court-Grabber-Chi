@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -165,7 +166,8 @@ def booking_out(b: dict) -> dict:
                              "court", "start_hour", "total", "hold_expires_at")}
     out.update(starts=json.loads(b["starts"]), courts=json.loads(b["courts"]),
                is_test=bool(b["is_test"]),
-               opens_at=bot.opens_at(dt.date.fromisoformat(b["play_date"])).isoformat())
+               opens_at=bot.opens_at(dt.date.fromisoformat(b["play_date"])).isoformat(),
+               has_shot=b["status"] in ("failed", "no_court") and bot.latest_shot(b["id"]) is not None)
     return out
 
 
@@ -227,6 +229,15 @@ def cancel_booking(booking_id: int, user: dict = Depends(current_user)):
     else:  # waiting or finished: stop / hide it
         db.set_booking(booking_id, status="cancelled")
     return {"ok": True}
+
+
+@app.get("/api/bookings/{booking_id}/screenshot")
+def booking_screenshot(booking_id: int, user: dict = Depends(current_user)):
+    own_booking(booking_id, user)
+    path = bot.latest_shot(booking_id)
+    if not path:
+        raise HTTPException(404, "No screenshot for this booking.")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 class PayIn(BaseModel):
